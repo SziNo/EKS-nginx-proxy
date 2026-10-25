@@ -15,9 +15,9 @@ variable "image_tag_mutability" {
 }
 
 variable "force_delete" {
-  description = "true esetén a repó akkor is törölhető, ha van benne image"
+  description = "true esetén a repó akkor is törölhető, ha van benne image. Az alapérték a biztonságos false; aki törölhető repót akar, kérje kifejezetten (a root gyakorláshoz true-t ad át)."
   type        = bool
-  default     = true
+  default     = false
 }
 
 variable "scan_on_push" {
