@@ -12,34 +12,48 @@ spec:
   updateStrategy:
     type: RollingUpdate
     rollingUpdate:
-      maxUnavailable: 1
+      # Frissítéskor az új pod a régi leállítása ELŐTT indul el ugyanazon a node-on,
+      # így egyik node-on sincs kiesés. maxSurge mellett a maxUnavailable 0 kell legyen.
+      maxSurge: 1
+      maxUnavailable: 0
   template:
     metadata:
       labels:
         app: nginx-proxy
     spec:
+      securityContext:
+        # A kubelet nem indítja el, ha rootként futna. Az nginx-unprivileged image
+        # számmal (UID 101) adja meg a felhasználót, ezért ez ellenőrizhető.
+        runAsNonRoot: true
       containers:
-      - name: nginx
-        # Nem root változat: a 8080-as porton figyel
-        image: nginxinc/nginx-unprivileged:1.27-alpine
-        ports:
-        - containerPort: 8080
-        readinessProbe:
-          httpGet:
-            path: /healthz
-            port: 8080
-          periodSeconds: 5
-        resources:
-          requests:
-            cpu: 50m
-            memory: 64Mi
-          limits:
-            memory: 128Mi
-        volumeMounts:
-        - name: conf
-          mountPath: /etc/nginx/conf.d
-          readOnly: true
+        - name: nginx
+          image: nginxinc/nginx-unprivileged:1.27-alpine # nem root, 8080-as port
+          ports:
+            - containerPort: 8080
+          # Kap-e forgalmat: ha elbukik, kikerül az EndpointSlice-ból (és az NLB health check is elbukik)
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            periodSeconds: 5
+          # Él-e még: ha elbukik, a kubelet újraindítja a konténert
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 128Mi
+          volumeMounts:
+            - name: conf
+              mountPath: /etc/nginx/conf.d
+              readOnly: true
       volumes:
-      - name: conf
-        configMap:
-          name: nginx-proxy-conf
+        - name: conf
+          configMap:
+            name: nginx-proxy-conf
