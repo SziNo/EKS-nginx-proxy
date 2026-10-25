@@ -1,3 +1,5 @@
+# A scripts/ és a README ezekre a nevekre hivatkozik, ezért a nevek nem változtak.
+
 output "region" {
   value = var.region
 }
@@ -7,11 +9,11 @@ output "cluster_name" {
 }
 
 output "ecr_repository_urls" {
-  value = { for k, r in aws_ecr_repository.app : k => r.repository_url }
+  value = module.ecr.repository_urls
 }
 
 output "nlb_security_group_id" {
-  value = aws_security_group.nlb.id
+  value = module.eks.nlb_security_group_id
 }
 
 output "kubeconfig_command" {

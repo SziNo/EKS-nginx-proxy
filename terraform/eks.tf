@@ -1,40 +1,21 @@
+# EKS cluster: IAM szerepek, security groupok (az NLB-é is), cluster, addonok,
+# managed node group, OIDC provider és admin access entry.
 module "eks" {
-  source  = "terraform-aws-modules/eks/aws"
-  version = "~> 20.0"
+  source = "./modules/eks"
 
-  cluster_name    = var.cluster_name
-  cluster_version = var.kubernetes_version
+  cluster_name       = var.cluster_name
+  kubernetes_version = var.kubernetes_version
 
   vpc_id     = module.vpc.vpc_id
-  subnet_ids = module.vpc.private_subnets # a node-ok privát subnetben
+  subnet_ids = module.vpc.private_subnet_ids # a control plane ENI-k és a node-ok is a privát subnetekben
 
-  # Gyakorláshoz publikus API endpoint; élesben szűkítsd (cluster_endpoint_public_access_cidrs)
-  cluster_endpoint_public_access = true
+  node_instance_types = var.node_instance_types
+  node_desired_size   = 3 # az ábrán 3 node van
+  node_min_size       = 2
+  node_max_size       = 4
 
-  # Aki a Terraformot futtatja, admin access entryt kap a clusterhez
-  enable_cluster_creator_admin_permissions = true
+  endpoint_public_access_cidrs = var.cluster_endpoint_public_access_cidrs
 
-  cluster_addons = {
-    coredns    = { most_recent = true }
-    kube-proxy = { most_recent = true }
-    vpc-cni = {
-      most_recent    = true
-      before_compute = true # a CNI legyen kész, mielőtt a node-ok elindulnak
-    }
-  }
-
-  eks_managed_node_groups = {
-    default = {
-      ami_type       = "AL2023_x86_64_STANDARD"
-      instance_types = var.node_instance_types
-
-      min_size     = 2
-      max_size     = 4
-      desired_size = 3 # az ábrán 3 node van
-
-      # A modul alapból hozzáadja a node szerephez:
-      #   AmazonEKSWorkerNodePolicy, AmazonEKS_CNI_Policy,
-      #   AmazonEC2ContainerRegistryReadOnly (ECR pull!)
-    }
-  }
+  # Aki a Terraformot futtatja (IAM user), cluster admin lesz
+  cluster_admin_principal_arns = [data.aws_caller_identity.current.arn]
 }

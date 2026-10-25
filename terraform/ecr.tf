@@ -1,15 +1,8 @@
-locals {
-  services = ["service-a", "service-b"]
-}
+# ECR repók a két alkalmazás image-ének (for_each a szolgáltatás nevével).
+module "ecr" {
+  source = "./modules/ecr"
 
-resource "aws_ecr_repository" "app" {
-  for_each = toset(local.services) # stabil kulcsok: a szolgáltatás neve, nem index!
-
-  name                 = each.value
-  image_tag_mutability = "MUTABLE" # élesben IMMUTABLE ajánlott
-  force_delete         = true      # gyakorláshoz: destroy akkor is menjen, ha van benne image
-
-  image_scanning_configuration {
-    scan_on_push = true
-  }
+  repository_names     = local.services
+  image_tag_mutability = "MUTABLE" # gyakorlás közben ugyanaz a tag felülírható; élesben IMMUTABLE ajánlott
+  force_delete         = true      # a destroy akkor is lefut, ha van image a repóban
 }

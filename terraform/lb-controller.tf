@@ -1,45 +1,17 @@
-# IAM szerep az AWS Load Balancer Controllernek (IRSA): csak ez a ServiceAccount veheti fel
-module "lbc_irsa" {
-  source  = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts-eks"
-  version = "~> 5.0"
+# AWS Load Balancer Controller: IRSA szerep + Helm release. Ez hozza létre az NLB-t
+# a k8s/nginx-service.yaml LoadBalancer Service-e alapján.
+module "lb_controller" {
+  source = "./modules/lb-controller"
 
-  role_name                              = "${var.cluster_name}-aws-lbc"
-  attach_load_balancer_controller_policy = true
+  cluster_name      = module.eks.cluster_name
+  region            = var.region
+  vpc_id            = module.vpc.vpc_id
+  oidc_provider_arn = module.eks.oidc_provider_arn
+  oidc_provider_url = module.eks.oidc_provider_url
+  chart_version     = var.lb_controller_chart_version
 
-  oidc_providers = {
-    main = {
-      provider_arn               = module.eks.oidc_provider_arn
-      namespace_service_accounts = ["kube-system:aws-load-balancer-controller"]
-    }
-  }
-}
-
-resource "helm_release" "aws_lbc" {
-  name       = "aws-load-balancer-controller"
-  repository = "https://aws.github.io/eks-charts"
-  chart      = "aws-load-balancer-controller"
-  namespace  = "kube-system"
-
-  set {
-    name  = "clusterName"
-    value = module.eks.cluster_name
-  }
-  set {
-    name  = "region"
-    value = var.region
-  }
-  set {
-    name  = "vpcId"
-    value = module.vpc.vpc_id
-  }
-  set {
-    name  = "serviceAccount.name"
-    value = "aws-load-balancer-controller"
-  }
-  set {
-    name  = "serviceAccount.annotations.eks\\.amazonaws\\.com/role-arn"
-    value = module.lbc_irsa.iam_role_arn
-  }
-
+  # A Helm release csak akkor induljon, ha az EKS modul MINDEN eleme kész: a node group
+  # (különben a controller podjai nem tudnak elindulni) és az admin access entry
+  # (különben a Helm provider nem jogosult telepíteni).
   depends_on = [module.eks]
 }
