@@ -1,0 +1,45 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: nginx-proxy
+  namespace: demo
+  labels:
+    app: nginx-proxy
+spec:
+  selector:
+    matchLabels:
+      app: nginx-proxy
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+  template:
+    metadata:
+      labels:
+        app: nginx-proxy
+    spec:
+      containers:
+      - name: nginx
+        # Nem root változat: a 8080-as porton figyel
+        image: nginxinc/nginx-unprivileged:1.27-alpine
+        ports:
+        - containerPort: 8080
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          periodSeconds: 5
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            memory: 128Mi
+        volumeMounts:
+        - name: conf
+          mountPath: /etc/nginx/conf.d
+          readOnly: true
+      volumes:
+      - name: conf
+        configMap:
+          name: nginx-proxy-conf

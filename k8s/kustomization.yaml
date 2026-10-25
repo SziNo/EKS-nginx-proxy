@@ -1,0 +1,19 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+- namespace.yaml
+- service-a.yaml
+- service-b.yaml
+- nginx-configmap.yaml
+- nginx-daemonset.yaml
+- nginx-service.yaml
+
+# Az image-ek ECR címét és tagjét itt állítjuk be (a scripts/render.sh tölti ki)
+images:
+- name: service-a
+  newName: ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/service-a
+  newTag: "1.0.0"
+- name: service-b
+  newName: ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/service-b
+  newTag: "1.0.0"

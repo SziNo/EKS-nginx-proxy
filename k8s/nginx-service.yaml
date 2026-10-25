@@ -1,0 +1,25 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-proxy
+  namespace: demo
+  annotations:
+    # Az AWS Load Balancer Controller kezelje, NLB legyen
+    service.beta.kubernetes.io/aws-load-balancer-type: "external"
+    # Publikus legyen (alapból belső lenne!)
+    service.beta.kubernetes.io/aws-load-balancer-scheme: "internet-facing"
+    # A node-ok NodePortjára küld; a DaemonSet + Local miatt mindig a helyi nginx-hez
+    service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: "instance"
+    # A Terraformban létrehozott NLB security group (a kustomization patch tölti ki)
+    service.beta.kubernetes.io/aws-load-balancer-security-groups: "NLB_SG_ID"
+    # A controller vegye fel a node SG-be a szabályt, hogy az NLB elérje a node-okat
+    service.beta.kubernetes.io/aws-load-balancer-manage-backend-security-group-rules: "true"
+spec:
+  type: LoadBalancer
+  externalTrafficPolicy: Local
+  selector:
+    app: nginx-proxy
+  ports:
+  - name: http
+    port: 80
+    targetPort: 8080
