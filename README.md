@@ -58,7 +58,7 @@ docs/notes.md                 fogalmak, hibakeresési napló, nyitott pontok
 cp terraform/terraform.tfvars.example terraform/terraform.tfvars   # szükség esetén szerkeszd
 cd terraform
 terraform init
-terraform plan -out=tfplan     # 55 to add, 0 to change, 0 to destroy
+terraform plan -out=tfplan     # 54 to add, 0 to change, 0 to destroy
 terraform apply tfplan         # ~15-20 perc, főleg az EKS
 cd ..
 $(terraform -chdir=terraform output -raw kubeconfig_command)
