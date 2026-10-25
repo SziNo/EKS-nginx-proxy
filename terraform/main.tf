@@ -1,23 +1,61 @@
-# Közös adatok, amelyeket a root ad át a moduloknak. A modulhívások témánként külön
-# fájlban vannak: vpc.tf, eks.tf, ecr.tf, lb-controller.tf.
+# A modulok meghívása. A sorrend az olvashatóságot szolgálja; azt, hogy mi mikor jön létre,
+# a Terraform a hivatkozásokból (függőségekből) dönti el.
 
-# A régióban elérhető availability zone-ok listája (az opt-in zónák, pl. Local Zone-ok nélkül).
-data "aws_availability_zones" "available" {
-  state = "available"
+# ECR repók a két alkalmazás image-ének (for_each a szolgáltatás nevével).
+# Független a többitől, ezért a Terraform a VPC-vel párhuzamosan hozza létre.
+module "ecr" {
+  source = "./modules/ecr"
 
-  filter {
-    name   = "opt-in-status"
-    values = ["opt-in-not-required"]
-  }
+  repository_names     = local.services
+  image_tag_mutability = "MUTABLE" # gyakorlás közben ugyanaz a tag felülírható; élesben IMMUTABLE ajánlott
+  force_delete         = true      # a destroy akkor is lefut, ha van image a repóban
 }
 
-# Ki futtatja a Terraformot? IAM usernél az ARN közvetlenül megadható az EKS access entrynek.
-data "aws_caller_identity" "current" {}
+# Hálózat: VPC, publikus és privát subnetek 3 AZ-ban, internet és NAT gateway, route táblák.
+module "vpc" {
+  source = "./modules/vpc"
 
-locals {
-  # Az első 3 AZ: ide kerül 1-1 publikus és privát subnet
-  azs = slice(data.aws_availability_zones.available.names, 0, 3)
+  name     = var.cluster_name
+  vpc_cidr = var.vpc_cidr
+  azs      = local.azs
+}
 
-  # A két alkalmazás neve: ebből lesznek az ECR repók (a scripts/build-push.sh is ezeket használja)
-  services = ["service-a", "service-b"]
+# EKS cluster: IAM szerepek, security groupok (az NLB-é is), cluster, addonok,
+# managed node group, OIDC provider és admin access entry.
+module "eks" {
+  source = "./modules/eks"
+
+  cluster_name       = var.cluster_name
+  kubernetes_version = var.kubernetes_version
+
+  vpc_id     = module.vpc.vpc_id
+  subnet_ids = module.vpc.private_subnet_ids # a control plane ENI-k és a node-ok is a privát subnetekben
+
+  node_instance_types = var.node_instance_types
+  node_desired_size   = var.node_desired_size
+  node_min_size       = var.node_min_size
+  node_max_size       = var.node_max_size
+
+  endpoint_public_access_cidrs = var.cluster_endpoint_public_access_cidrs
+
+  # Aki a Terraformot futtatja (IAM user), cluster admin lesz
+  cluster_admin_principal_arns = [data.aws_caller_identity.current.arn]
+}
+
+# AWS Load Balancer Controller: IRSA szerep + Helm release. Ez hozza létre az NLB-t
+# a k8s/base/nginx-service.yaml LoadBalancer Service-e alapján.
+module "lb_controller" {
+  source = "./modules/lb-controller"
+
+  cluster_name      = module.eks.cluster_name
+  region            = var.region
+  vpc_id            = module.vpc.vpc_id
+  oidc_provider_arn = module.eks.oidc_provider_arn
+  oidc_provider_url = module.eks.oidc_provider_url
+  chart_version     = var.lb_controller_chart_version
+
+  # A Helm release csak akkor induljon, ha az EKS modul MINDEN eleme kész: a node group
+  # (különben a controller podjai nem tudnak elindulni) és az admin access entry
+  # (különben a Helm provider nem jogosult telepíteni).
+  depends_on = [module.eks]
 }
