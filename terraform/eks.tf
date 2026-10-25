@@ -10,9 +10,9 @@ module "eks" {
   subnet_ids = module.vpc.private_subnet_ids # a control plane ENI-k és a node-ok is a privát subnetekben
 
   node_instance_types = var.node_instance_types
-  node_desired_size   = 3 # az ábrán 3 node van
-  node_min_size       = 2
-  node_max_size       = 4
+  node_desired_size   = var.node_desired_size
+  node_min_size       = var.node_min_size
+  node_max_size       = var.node_max_size
 
   endpoint_public_access_cidrs = var.cluster_endpoint_public_access_cidrs
 
