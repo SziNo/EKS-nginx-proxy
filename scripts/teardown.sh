@@ -24,7 +24,7 @@ if aws eks describe-cluster --name "$CLUSTER" --region "$REGION" >/dev/null 2>&1
 
   # --wait: a Service-en lévő controller finalizer miatt ez csak akkor tér vissza,
   # amikor a controller már törölte az NLB-t és a target groupokat.
-  kubectl delete -k k8s/ --ignore-not-found --wait=true --timeout=10m
+kubectl delete -k k8s/base --ignore-not-found --wait=true --timeout=10m
 else
   echo "A cluster már nem létezik, a Kubernetes lépés kimarad."
 fi

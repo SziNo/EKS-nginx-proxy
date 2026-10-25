@@ -12,6 +12,13 @@ override.tf.json
 *_override.tf
 *_override.tf.json
 
+# Terraform változóértékek: a valódi nem, a minta igen
+*.tfvars
+!*.tfvars.example
+
+# Kubernetes: a render.sh által generált overlay
+k8s/overlays/
+
 # Python
 __pycache__/
 *.pyc
