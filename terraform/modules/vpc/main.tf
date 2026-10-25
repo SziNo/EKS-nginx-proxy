@@ -36,10 +36,13 @@ resource "aws_internet_gateway" "this" {
 resource "aws_subnet" "public" {
   for_each = local.public_subnets
 
-  vpc_id                  = aws_vpc.this.id
-  availability_zone       = each.key
-  cidr_block              = each.value
-  map_public_ip_on_launch = true
+  vpc_id            = aws_vpc.this.id
+  availability_zone = each.key
+  cidr_block        = each.value
+  # Nincs itt olyan gép, aminek automatikusan publikus IP kellene: a node-ok a privát
+  # subnetekben vannak, a NAT gateway saját EIP-t kap, az NLB a saját címeit kezeli.
+  # A true csak felesleges kockázat lenne: egy ide indított EC2 azonnal elérhető lenne az internetről.
+  map_public_ip_on_launch = false
 
   tags = {
     Name                     = "${var.name}-public-${each.key}"

@@ -5,6 +5,28 @@ terraform {
   # 1.6: a README is ezt írja elő; az itt használt nyelvi elemek (for_each, optional, precondition) ezzel mind működnek
   required_version = ">= 1.6"
 
+  # Remote state S3-ban (most NINCS bekapcsolva, a state helyben van: terraform/terraform.tfstate).
+
+  # A bucketet ELŐRE, kézzel kell létrehozni, mert az "init" már keresi, mielőtt bármit létrehozna:
+  #   aws s3 mb s3://nginx-proxy-demo-tfstate-362099375729 --region eu-west-1
+  #   aws s3api put-bucket-versioning --bucket nginx-proxy-demo-tfstate-362099375729 \
+  #     --versioning-configuration Status=Enabled     # ajánlott: egy elrontott state visszaállítható
+  # (A nyilvános hozzáférés tiltása és a titkosítás az új bucketeken alapból be van kapcsolva.)
+
+  # Bekapcsolás: vedd ki a kommentet a blokk elől, majd "terraform init -migrate-state"
+  # (átköltözteti a helyi state-et a bucketbe).
+  # A backend blokkban NEM használhatók változók: az init minden más előtt olvassa be, ezért szó szerinti értékek.
+  # A use_lockfile egy .tflock fájllal zárol az S3-ban, így két egyidejű apply nem írhatja felül egymást
+  # (régebben ehhez DynamoDB tábla kellett).
+
+  # backend "s3" {
+  #   bucket       = "nginx-proxy-demo-tfstate-362099375729"
+  #   key          = "eks-nginx-proxy/terraform.tfstate"
+  #   region       = "eu-west-1"
+  #   encrypt      = true
+  #   use_lockfile = true
+  # }
+
   required_providers {
     # AWS provider: a VPC, EKS, IAM, ECR erőforrások.
     # 6.x: az aktuális főverzió. Az 5.x-hez képest törő változások vannak (pl. az aws_eip-nél
