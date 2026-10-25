@@ -23,10 +23,12 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 RUN useradd --create-home --uid 10001 appuser
 
 WORKDIR /app
-COPY --from=builder /opt/venv /opt/venv 
+COPY --from=builder /opt/venv /opt/venv
 COPY --chown=appuser:appuser app.py .
 
-USER appuser
+# Számmal (UID), nem névvel: a Kubernetes runAsNonRoot ellenőrzése csak számból tudja
+# eldönteni, hogy a felhasználó nem root; névvel a pod el sem indulna.
+USER 10001
 EXPOSE 8080
 
 # Exec forma: a gunicorn lesz a PID 1, megkapja a SIGTERM-et (szép leállás)
