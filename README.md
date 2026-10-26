@@ -151,21 +151,80 @@ kubectl apply -k k8s/overlays/local
 
 A `k8s/base/` a git által követett manifesteket tartalmazza, környezetfüggő érték nélkül. A `render.sh` minden futtatáskor újraírja a `k8s/overlays/local/kustomization.yaml`-t a Terraform aktuális kimenetéből, így akárhányszor futtatható (pl. egy új `apply` után új SG ID-vel). A `build-push.sh`-nak és a `render.sh`-nak ugyanazt a taget kell megadni.
 
-### 5. Ellenőrzés
+### 5. Ellenőrzés és tesztelés
+
+**Alap ellenőrzés:**
 
 ```bash
+kubectl get nodes -o wide                 # 3 node, Ready, OS-IMAGE: Bottlerocket
 kubectl get pods -n demo -o wide          # nginx minden node-on, A és B 2-2 replika
+kubectl get svc -n demo                   # a ClusterIP-k, és az nginx-proxy NodePortja (pl. 80:31234/TCP)
 kubectl get endpointslices -n demo        # a Service-ek mögött ott vannak a pod IP-k
-kubectl get svc nginx-proxy -n demo       # EXTERNAL-IP: az NLB DNS neve (pár perc)
-kubectl describe svc nginx-proxy -n demo  # az Events részben a controller üzenetei
+kubectl describe svc nginx-proxy -n demo  # az Events részben a controller üzenetei (NLB létrehozása)
 
 NLB=$(kubectl get svc nginx-proxy -n demo -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+echo $NLB
 curl http://$NLB/api/sa     # Hello from Service A!
 curl http://$NLB/api/sb     # Hello from Service B!
 curl http://$NLB/           # 404, ahogy kell
 ```
 
-Az NLB DNS neve és a targetek egészségessé válása 2–5 percig is eltarthat.
+Az NLB DNS neve és a targetek egészségessé válása 2–5 percig is eltarthat. Az `NLB` (és lent a `TG`) egy shell változó: csak abban a terminálban létezik, ahol beállítottad, egy új terminálban újra le kell futtatni.
+
+**Az NLB targetek állapota** (minden node `healthy` legyen):
+
+```bash
+TG=$(aws elbv2 describe-target-groups --region eu-west-1 \
+  --query "TargetGroups[?starts_with(TargetGroupName, 'k8s-demo')].TargetGroupArn" --output text)
+aws elbv2 describe-target-health --region eu-west-1 --target-group-arn $TG \
+  --query 'TargetHealthDescriptions[].[Target.Id,TargetHealth.State]' --output table
+```
+
+**Az nginx élő konfigurációja** (amit a ConfigMapből kapott):
+
+```bash
+kubectl exec -n demo ds/nginx-proxy -- nginx -T
+```
+
+**A kliens IP megmarad** (`externalTrafficPolicy: Local`): az nginx access logjában a saját nyilvános IP-d látszik, nem egy node IP-je.
+
+```bash
+curl -s https://checkip.amazonaws.com     # a saját nyilvános IP-d
+curl -s http://$NLB/api/sa > /dev/null
+kubectl logs -n demo -l app=nginx-proxy --tail=5 --prefix
+```
+
+**IRSA:** az LB Controller ServiceAccountján ott a szerep ARN-je.
+
+```bash
+kubectl get sa aws-load-balancer-controller -n kube-system -o jsonpath='{.metadata.annotations}'
+```
+
+**A Service A független skálázása:**
+
+```bash
+kubectl scale deployment service-a --replicas=4 -n demo
+kubectl get pods -n demo -l app=service-a -o wide
+kubectl get endpointslices -n demo -l kubernetes.io/service-name=service-a
+kubectl scale deployment service-a --replicas=2 -n demo   # vissza
+```
+
+**Egy node kiesése:** egy második terminálban folyamatosan küldj kéréseket, és közben állíts le egy node-ot. A szolgáltatás elérhető marad; néhány másodpercig előfordulhat egy-egy hiba, amíg az NLB health check kiveszi a node-ot. A managed node group új node-ot indít, és arra a DaemonSet automatikusan tesz nginx-et.
+
+```bash
+# 1. terminál: folyamatos kérések
+# (egy új terminálban az NLB változó üres, ezért előbb újra be kell állítani)
+NLB=$(kubectl get svc nginx-proxy -n demo -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+while true; do curl -s -o /dev/null -w "%{http_code}\n" http://$NLB/api/sa; sleep 1; done
+
+# 2. terminál: egy node EC2 azonosítója, majd leállítása
+kubectl get nodes -o jsonpath='{.items[0].spec.providerID}'      # aws:///eu-west-1a/i-0abc...
+aws ec2 terminate-instances --region eu-west-1 --instance-ids <i-0abc...>
+kubectl get nodes -w                                              # a node eltűnik, később új jön
+kubectl get pods -n demo -o wide -w                               # a podok átkerülnek, az új node-on nginx indul
+```
+
+(Egy `kubectl drain` erre nem jó bemutató: a DaemonSet podokat nem telepíti át, így az nginx a kiürített node-on is tovább fut.)
 
 ### 6. Lebontás
 
@@ -173,7 +232,7 @@ Az NLB DNS neve és a targetek egészségessé válása 2–5 percig is eltartha
 ./scripts/teardown.sh
 ```
 
-A szkript a helyes sorrendben bont: **először** a Kubernetes erőforrásokat (`kubectl delete -k k8s/base`; így a controller törli az NLB-t, amit nem a Terraform hozott létre), megvárja, amíg az NLB eltűnik, utána `terraform destroy` (jóváhagyást kér), végül listázza a régió load balancereit, futó NAT gatewayeit és EKS clustereit. Törléshez a base elég, mert a `delete` csak a neveket nézi.
+A szkript a helyes sorrendben bont: **először** a Kubernetes erőforrásokat (`kubectl delete -k k8s/base`; így a controller törli az NLB-t, amit nem a Terraform hozott létre), megvárja, amíg az NLB eltűnik, utána `terraform destroy` (jóváhagyást kér, `yes`-t kell beírni), végül listázza a régió load balancereit, futó NAT gatewayeit és EKS clustereit. Törléshez a base elég, mert a `delete` csak a neveket nézi.
 
 A helyben maradt Docker image-ek takarítása (az ECR-t nem érinti):
 
@@ -182,6 +241,29 @@ docker rmi service-a:local service-b:local
 docker rmi $(docker images --format '{{.Repository}}:{{.Tag}}' | grep dkr.ecr)   # a buildx --push helyi példányai
 docker image prune -f
 docker builder prune -f
+```
+
+A kubeconfig bejegyzés a már nem létező clusterre (nem kerül pénzbe, csak rendrakás):
+
+```bash
+kubectl config get-contexts
+kubectl config delete-context <a cluster kontextusának neve>
+```
+
+Ha a `terraform destroy` a VPC-nél vagy a subneteknél elakad, a szkript újra futtatható. Ha akkor sem megy, nézd meg, maradt-e hálózati interfész a VPC-ben (pl. egy load balancertől vagy a VPC CNI-től). Ehhez előbb a VPC azonosítója kell, ami a neve alapján megkereshető (a név a `cluster_name`-ből képződik):
+
+```bash
+aws ec2 describe-vpcs --region eu-west-1 \
+  --filters Name=tag:Name,Values=<cluster_name>-vpc \
+  --query 'Vpcs[].VpcId' --output text
+```
+
+Utána a VPC-ben maradt hálózati interfészek:
+
+```bash
+aws ec2 describe-network-interfaces --region eu-west-1 \
+  --filters Name=vpc-id,Values=<vpc-id> \
+  --query 'NetworkInterfaces[].[NetworkInterfaceId,Description,Status]' --output table
 ```
 
 ## Döntések és indoklásuk
