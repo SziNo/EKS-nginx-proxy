@@ -41,12 +41,12 @@ resource "aws_iam_policy" "this" {
   description = "AWS Load Balancer Controller (${var.cluster_name})"
   policy      = file(local.policy_file)
 
-  # Védőháló: amíg az iam_policy.json csak a helyőrző (nincs benne Statement), a plan
-  # érthető hibaüzenettel álljon meg, ne az AWS API-tól jöjjön homályos hiba apply közben.
+  # Védőháló: ha az iam_policy.json nem érvényes IAM policy (pl. üres, vagy valaki egy helyőrzőt
+  # tett a helyére), a plan érthető hibaüzenettel álljon meg, ne az AWS API-tól jöjjön homályos hiba apply közben.
   lifecycle {
     precondition {
       condition     = can(jsondecode(file(local.policy_file)).Statement)
-      error_message = "A modules/lb-controller/iam_policy.json még a helyőrző. Töltsd le a hivatalos policyt a chart appVersion-jéhez illő verzióval (lásd a fájl tartalmát)."
+      error_message = "A modules/lb-controller/iam_policy.json nem érvényes IAM policy. Töltsd le a hivatalos policyt a controller verziójához illő verzióval (a 3.x óta a chart és a controller verziója megegyezik)."
     }
   }
 }
@@ -58,8 +58,10 @@ resource "aws_iam_role_policy_attachment" "this" {
 }
 
 # Az AWS Load Balancer Controller telepítése Helm charttal (Helm provider 3.x: a set lista).
-# A chart létrehozza a ServiceAccountot, és ráteszi a role-arn annotációt: az EKS pod identity
-# webhook ebből tudja, hogy a pod ezt az IAM szerepet vegye fel.
+# A chart létrehozza a ServiceAccountot, és ráteszi a role-arn annotációt (IRSA). Az EKS egy
+# webhookja ebből tudja, hogy a podba be kell tenni a ServiceAccount tokent és a szerep ARN-jét,
+# amivel az AWS SDK felveszi a szerepet. (A webhook neve pod-identity-webhook, de ez az IRSA része,
+# nem azonos az újabb "EKS Pod Identity" funkcióval.)
 resource "helm_release" "this" {
   name       = "aws-load-balancer-controller"
   repository = "https://aws.github.io/eks-charts"
