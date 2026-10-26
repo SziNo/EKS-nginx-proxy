@@ -1,6 +1,6 @@
 # EKS + NGINX DaemonSet reverse proxy
 
-Két konténeres alkalmazás EKS-en, előttük minden node-on egy nginx reverse proxy (DaemonSet), amely útvonal alapján osztja szét a kéréseket. Kívülről egy publikus NLB érhető el. A teljes infrastruktúra Terraformmal, saját modulokból épül, az image-ek az ECR-ben vannak.
+Két konténeres alkalmazás EKS-en, előttük minden node-on egy nginx reverse proxy (DaemonSet), amely útvonal alapján osztja szét a kéréseket. Kívülről egy publikus NLB érhető el. A teljes infrastruktúra Terraformmal, saját modulokból (registry modulok nélkül) épül, az image-ek az ECR-ben vannak.
 
 ## A felépítés
 
@@ -8,71 +8,140 @@ Két konténeres alkalmazás EKS-en, előttük minden node-on egy nginx reverse 
 Internet
    │
    ▼
-AWS NLB (publikus subnet, saját security group)
+AWS NLB (publikus subnet, saját security group, 80-as port)
    │  target-type: instance, externalTrafficPolicy: Local
    ▼
-node:NodePort  → kernel DNAT (a kube-proxy szabályai alapján) → a helyi nginx pod
+node:NodePort  → kernel DNAT (a kube-proxy szabályai alapján) → a helyi nginx pod (8080)
    │
    ▼
-nginx (DaemonSet, nginx.conf a ConfigMap-ből, path alapú routing)
-   ├── /api/sa → service-a.demo.svc.cluster.local (ClusterIP) → service-a podok
-   └── /api/sb → service-b.demo.svc.cluster.local (ClusterIP) → service-b podok
+nginx (DaemonSet, konfiguráció a ConfigMap-ből, path alapú routing)
+   ├── /api/sa → service-a.demo.svc.cluster.local (ClusterIP :80) → service-a podok (:8080)
+   └── /api/sb → service-b.demo.svc.cluster.local (ClusterIP :80) → service-b podok (:8080)
 ```
 
-A feladat ábráján a „Service A → Service B” nyíl **nem** hívási láncot jelent: az nginx útvonal alapján **párhuzamosan** osztja szét a kéréseket. Az app podok sem feltétlenül vannak minden node-on (Deploymentek), csak az nginx (DaemonSet).
-
-Az NLB 4. rétegű (csak TCP-t továbbít), az nginx 7. rétegű: lezárja a kliens kapcsolatát, kiolvassa a HTTP útvonalat, és egy új kapcsolatot nyit a megfelelő Service felé. A háttérpod bármelyik node-on lehet.
+- Az **NLB** 4. rétegű: csak a TCP kapcsolatot továbbítja a node-ok **NodePortjára**, a HTTP-be nem néz bele.
+- A node-on a kernel a kube-proxy szabályai alapján a **helyi** nginx podra irányít (`Local` policy: nincs extra ugrás, megmarad a kliens IP).
+- Az **nginx** 7. rétegű: lezárja a kliens kapcsolatát, kiolvassa az útvonalat, és egy **új** kapcsolatot nyit a megfelelő Service felé. A nevet a **CoreDNS** a Service ClusterIP-jére fordítja, a ClusterIP-t a kube-proxy egy ready pod IP-jére, ami bármelyik node-on lehet.
+- A feladat ábráján a „Service A → Service B” nyíl nem hívási lánc: az nginx a kéréseket útvonal szerint **párhuzamosan** osztja szét.
 
 ## Mappaszerkezet
 
 ```
-terraform/                    root module: modulhívások, providerek, változók, outputok
-  terraform.tfvars.example    a környezeti beállítások mintája (a terraform.tfvars nincs a gitben)
-  modules/vpc/                VPC, subnetek (3 AZ), IGW, NAT gateway, route táblák
-  modules/eks/                IAM szerepek, security groupok (az NLB-é is), cluster, addonok,
-                              launch template, managed node group, OIDC provider, access entry
-  modules/ecr/                a két ECR repó
-  modules/lb-controller/      IRSA szerep + hivatalos IAM policy (iam_policy.json) + Helm release
-apps/service-a/               Flask app + multi-stage Dockerfile + .dockerignore
-apps/service-b/               ugyanez a B szolgáltatásnak
-k8s/base/                     Namespace, Deploymentek, ClusterIP Service-ek, nginx ConfigMap,
-                              DaemonSet, NLB Service, kustomization (környezetfüggő érték nélkül)
-k8s/overlays/local/           a render.sh generálja (image cím, tag, NLB SG ID); nincs a gitben
-scripts/                      build-push.sh (ECR), render.sh (overlay generálása), teardown.sh (lebontás)
-docs/notes.md                 fogalmak, hibakeresési napló, nyitott pontok
+terraform/                       root module
+  versions.tf                    Terraform és provider verziók (+ kikommentelt S3 backend)
+  providers.tf                   aws és helm provider konfiguráció
+  variables.tf                   a root változói (környezeti értékek alapérték nélkül)
+  data.tf                        lekérdezések (ki futtatja a Terraformot)
+  locals.tf                      közös értékek (a szolgáltatások nevei)
+  main.tf                        a négy modul meghívása
+  outputs.tf                     a scriptek által használt kimenetek
+  terraform.tfvars.example       a környezeti beállítások mintája (a terraform.tfvars nincs a gitben)
+  modules/vpc/                   VPC, subnetek (AZ-nként a tfvars térképéből), IGW, NAT gateway, route táblák
+  modules/eks/                   IAM szerepek, security groupok (az NLB-é is), cluster, addonok,
+                                 launch template, managed node group, OIDC provider, access entry
+  modules/ecr/                   ECR repók
+  modules/lb-controller/         IRSA szerep + hivatalos IAM policy (iam_policy.json) + Helm release
+apps/service-a/                  Flask app + multi-stage Dockerfile + .dockerignore + requirements.txt
+apps/service-b/                  ugyanez a B szolgáltatásnak
+k8s/base/                        Namespace, Deploymentek, ClusterIP Service-ek, nginx ConfigMap,
+                                 DaemonSet, NLB Service, kustomization (környezetfüggő érték nélkül)
+k8s/overlays/local/              a render.sh generálja (image cím, tag, NLB SG ID); nincs a gitben
+scripts/build-push.sh            mindkét image buildelése (linux/amd64) és feltöltése az ECR-be
+scripts/render.sh                a helyi overlay generálása a Terraform kimenetéből
+scripts/teardown.sh              lebontás a helyes sorrendben, maradékellenőrzéssel
+docs/notes.md                    a projekt döntései, hibái és az 1on1 kérdések válaszai
 ```
 
 ## Előfeltételek
 
-- AWS CLI bejelentkezve (`aws sts get-caller-identity`). Aki a Terraformot futtatja, az lesz a cluster adminja.
-- Terraform ≥ 1.6, kubectl, Docker buildx. A Helm CLI opcionális (a Terraform a Helm providerrel telepít), hibakereséshez hasznos.
-- A kubectl legfeljebb egy alverzióval térhet el a clustertől (a cluster most 1.37).
-- Régió: `eu-west-1`.
-- **Költség:** kb. 0,33 $/óra, amíg fut (részletek lent). Érdemes AWS Budget riasztást beállítani.
+- **Eszközök:** AWS CLI (bejelentkezve: `aws sts get-caller-identity`), Terraform ≥ 1.6, kubectl, Docker buildx. A Helm CLI opcionális (a Terraform a Helm providerrel telepít), hibakereséshez hasznos. Más eszköz (pl. `jq`) nem kell.
+- **Identitás:** aki a Terraformot futtatja, az lesz a cluster adminja (access entry). Ha később más AWS identitással futtatnád, az lecserélné az admint.
+- **Verziók:** a kubectl legfeljebb egy alverzióval térhet el a clustertől (a cluster 1.37).
+- **Régió:** `eu-west-1`.
+- **Megosztott AWS fióknál:** a `cluster_name` legyen egyedi (pl. a monogramoddal), mert az IAM szerepek és policyk neve **fiókszinten** egyedi, régiótól függetlenül. A `teardown.sh` végső ellenőrzése a régió **összes** load balancerét, NAT gatewayét és clusterét listázza, így ott mások erőforrásai is megjelenhetnek.
+- **Költség:** kb. 0,33 $/óra, amíg fut (részletek lent).
+
+## Mit hoz létre a Terraform
+
+A `plan` **54** erőforrást mutat (`54 to add, 0 to change, 0 to destroy`). Ha más szám jön ki, érdemes utánajárni (pl. egy ottfelejtett `.tf` fájl miatt).
+
+**`vpc` modul:** VPC (`10.0.0.0/16`, DNS támogatással), AZ-nként egy publikus `/24` és egy privát `/20` subnet a tfvars `subnets` térképéből, internet gateway, egy NAT gateway (az ábécésorrend szerinti első AZ-ban) EIP-vel, egy publikus és egy privát route tábla a társításokkal. A subnetek tagjei (`kubernetes.io/role/elb`, `internal-elb`) alapján választ subnetet az LB Controller.
+
+**`eks` modul:**
+
+- **IAM:** cluster szerep (`AmazonEKSClusterPolicy`, az `eks.amazonaws.com` veheti fel) és node szerep (`AmazonEKSWorkerNodePolicy`, `AmazonEKS_CNI_Policy`, `AmazonEC2ContainerRegistryReadOnly`, az `ec2.amazonaws.com` veheti fel).
+- **Security groupok:** a control plane kiegészítő SG-je, a node SG és az NLB SG, különálló szabály erőforrásokkal (lásd a döntéseknél).
+- **Cluster:** privát és publikus API endpoint, `API` hitelesítési mód (csak access entry, `aws-auth` ConfigMap nélkül).
+- **Addonok** (EKS managed, az 1.37-hez elérhető legújabb verzióval):
+  - `vpc-cni`: a pod hálózat; a podok valódi VPC IP-t kapnak. A node-ok **előtt** települ, különben nem lennének Ready-k.
+  - `kube-proxy`: a node-okon a Service-ek (ClusterIP, NodePort) kernel szabályait írja. A node-ok előtt települ.
+  - `coredns`: a cluster DNS-e; ezzel oldja fel az nginx a `service-a.demo.svc.cluster.local` neveket. A node-ok **után** települ, mert a podjainak node kell.
+- **Node group:** 3 node (min 2, max 4), `t3.medium`, **Bottlerocket** OS, a privát subnetekben, launch template-tel (saját node SG, IMDSv2, hop limit 1).
+- **OIDC provider:** az IRSA alapja. A `tls` provider csak ahhoz kell, hogy az OIDC kibocsátó tanúsítványának ujjlenyomatát kiolvassa; **a forgalomhoz nincs köze**, a projektben nincs TLS/HTTPS.
+- **Access entry:** a Terraformot futtató IAM identitás `AmazonEKSClusterAdminPolicy`-t kap az egész clusterre.
+
+**`ecr` modul:** a `service-a` és `service-b` repó, feltöltéskori szkenneléssel.
+
+**`lb-controller` modul:** az AWS Load Balancer Controller IAM szerepe IRSA-val (csak a `kube-system/aws-load-balancer-controller` ServiceAccount veheti fel), a hivatalos IAM policy, és a controller telepítése **Helm**-mel (chart 3.6.2). Ez a controller hozza létre az NLB-t a Kubernetes Service alapján.
+
+**Helm:** a Terraform Helm providere a cluster címét és tanúsítványát az `eks` modul kimenetéből kapja, a tokent pedig az `aws eks get-token` adja (`exec`), így egy hosszú `apply` közben sem jár le.
+
+### Remote state S3-ban (opcionális, előkészítve)
+
+A state most helyben van (`terraform/terraform.tfstate`). A `versions.tf`-ben egy kikommentelt `backend "s3"` blokk van. Bekapcsolás:
+
+```bash
+# 1. A bucketet előre, kézzel kell létrehozni (az init már keresi):
+aws s3 mb s3://<egyedi-bucket-név> --region eu-west-1
+aws s3api put-bucket-versioning --bucket <egyedi-bucket-név> --versioning-configuration Status=Enabled
+
+# 2. A versions.tf-ben a backend blokk elől a komment törlése (a bucket nevét átírva),
+#    majd a helyi state átköltöztetése:
+terraform -chdir=terraform init -migrate-state
+```
+
+A backend blokkban nem használhatók változók. A `use_lockfile = true` az S3-ban zárol (DynamoDB már nem kell). A state bucketet a környezet lebontásakor ne töröld, csak ha a `destroy` biztosan maradéktalanul lefutott.
 
 ## Lépések
 
-### 1. Infrastruktúra
+### 0. Környezeti beállítások
 
 ```bash
-cp terraform/terraform.tfvars.example terraform/terraform.tfvars   # szükség esetén szerkeszd
+cp terraform/terraform.tfvars.example terraform/terraform.tfvars   # szükség esetén szerkeszd (cluster_name!)
+```
+
+### 1. Az image-ek helyi tesztje (ingyenes, AWS nélkül)
+
+```bash
+docker build -t service-a:local apps/service-a
+docker run -d --rm --name sa-test -p 8080:8080 service-a:local
+curl http://localhost:8080/api/sa       # Hello from Service A!
+curl http://localhost:8080/healthz      # ok
+docker logs sa-test
+docker stop sa-test                     # a --rm miatt a konténer törlődik is
+# ugyanígy a service-b-vel (/api/sb)
+```
+
+### 2. Infrastruktúra
+
+```bash
 cd terraform
 terraform init
 terraform plan -out=tfplan     # 54 to add, 0 to change, 0 to destroy
 terraform apply tfplan         # ~15-20 perc, főleg az EKS
 cd ..
 $(terraform -chdir=terraform output -raw kubeconfig_command)
-kubectl get nodes                                          # 3 node, Ready
+kubectl get nodes -o wide                                  # 3 node, Ready, OS-IMAGE: Bottlerocket
 kubectl get deploy -n kube-system aws-load-balancer-controller
 ```
 
-### 2. Image-ek az ECR-be
+### 3. Image-ek az ECR-be
 
 ```bash
 ./scripts/build-push.sh 1.0.0
 ```
 
-### 3. Overlay generálása és telepítés
+### 4. Overlay generálása és telepítés
 
 ```bash
 ./scripts/render.sh 1.0.0                # generálja a k8s/overlays/local overlay-t (ECR cím, tag, NLB SG ID)
@@ -80,14 +149,15 @@ kubectl kustomize k8s/overlays/local     # ellenőrzés: mit fog létrehozni
 kubectl apply -k k8s/overlays/local
 ```
 
-A `k8s/base/` a git által követett manifesteket tartalmazza, környezetfüggő érték nélkül. A `render.sh` minden futtatáskor újraírja a `k8s/overlays/local/kustomization.yaml`-t a Terraform aktuális kimenetéből, így akárhányszor futtatható (pl. egy új `apply` után új SG ID-vel). Az overlay nincs a gitben. A `build-push.sh`-nak és a `render.sh`-nak ugyanazt a taget kell megadni.
+A `k8s/base/` a git által követett manifesteket tartalmazza, környezetfüggő érték nélkül. A `render.sh` minden futtatáskor újraírja a `k8s/overlays/local/kustomization.yaml`-t a Terraform aktuális kimenetéből, így akárhányszor futtatható (pl. egy új `apply` után új SG ID-vel). A `build-push.sh`-nak és a `render.sh`-nak ugyanazt a taget kell megadni.
 
-### 4. Ellenőrzés
+### 5. Ellenőrzés
 
 ```bash
 kubectl get pods -n demo -o wide          # nginx minden node-on, A és B 2-2 replika
 kubectl get endpointslices -n demo        # a Service-ek mögött ott vannak a pod IP-k
 kubectl get svc nginx-proxy -n demo       # EXTERNAL-IP: az NLB DNS neve (pár perc)
+kubectl describe svc nginx-proxy -n demo  # az Events részben a controller üzenetei
 
 NLB=$(kubectl get svc nginx-proxy -n demo -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
 curl http://$NLB/api/sa     # Hello from Service A!
@@ -97,84 +167,104 @@ curl http://$NLB/           # 404, ahogy kell
 
 Az NLB DNS neve és a targetek egészségessé válása 2–5 percig is eltarthat.
 
-### 5. Lebontás
+### 6. Lebontás
 
 ```bash
 ./scripts/teardown.sh
 ```
 
-A szkript a helyes sorrendben bont: **először** a Kubernetes erőforrásokat (`kubectl delete -k k8s/base`; így a controller törli az NLB-t, amit nem a Terraform hozott létre), megvárja, amíg az NLB eltűnik, utána `terraform destroy` (jóváhagyást kér), végül ellenőrzi, hogy nem maradt-e load balancer, futó NAT gateway vagy EKS cluster. Ha fordítva bontanál, a `destroy` elakadna a VPC-n, mert az NLB még használja a subneteket és a security groupot. Törléshez a base elég, mert a `delete` csak a neveket nézi, és a base mindig megvan.
+A szkript a helyes sorrendben bont: **először** a Kubernetes erőforrásokat (`kubectl delete -k k8s/base`; így a controller törli az NLB-t, amit nem a Terraform hozott létre), megvárja, amíg az NLB eltűnik, utána `terraform destroy` (jóváhagyást kér), végül listázza a régió load balancereit, futó NAT gatewayeit és EKS clustereit. Törléshez a base elég, mert a `delete` csak a neveket nézi.
+
+A helyben maradt Docker image-ek takarítása (az ECR-t nem érinti):
+
+```bash
+docker rmi service-a:local service-b:local
+docker rmi $(docker images --format '{{.Repository}}:{{.Tag}}' | grep dkr.ecr)   # a buildx --push helyi példányai
+docker image prune -f
+docker builder prune -f
+```
 
 ## Döntések és indoklásuk
 
 ### Infrastruktúra (Terraform)
 
-| Döntés                                                             | Miért                                                                                                                                                                  |
-| ------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Saját modulok, registry modul nélkül                               | A feladat IAM szerepeket és security groupokat kér; így mind látható és elmagyarázható a kódban. Gyakorlás is volt a cél.                                              |
-| `for_each`, `count` nélkül                                         | Stabil, név szerinti kulcsok (AZ, repó név); egy elem törlése nem tolja el a többit.                                                                                   |
-| Környezeti értékek a `terraform.tfvars`-ból, nem alapértékként     | A kód és a környezet beállításai külön vannak. A `lb_controller_chart_version` kivétel: az `iam_policy.json`-hoz kötődik, vagyis a kód része, ezért marad alapértéke.  |
-| Provider verziók: rootban `~>`, modulokban `>=`                    | A root rögzíti, mit használ a projekt (és a lock fájl befagyasztja), a modul csak a minimumot jelzi. Az `init` a kettőt összefésüli.                                   |
-| Node-ok privát subnetben, NLB publikusban                          | Az internet csak az NLB-t éri el; kifelé NAT gateway.                                                                                                                  |
-| `/20`-as privát subnetek                                           | A VPC CNI miatt a podok is a subnetből kapnak IP-t.                                                                                                                    |
-| Egy NAT gateway                                                    | Gyakorláshoz olcsóbb; élesben AZ-nként egy kell a magas rendelkezésre álláshoz.                                                                                        |
-| Subnet tagek (`kubernetes.io/role/elb`, `internal-elb`)            | Ezekből tudja a controller, hová tegye a load balancert.                                                                                                               |
-| Launch template a node groupnál                                    | Enélkül az EKS a saját cluster SG-jét tenné a node-okra, és a node SG szabályai nem érvényesülnének.                                                                   |
-| Különálló SG szabály erőforrások, inline helyett                   | A Terraform így nem törli ki a controller által felvett szabályokat.                                                                                                   |
-| Node SG: 9443 a cluster SG-ből                                     | Az LB Controller webhookja; nélküle a LoadBalancer Service létrehozása hibára fut.                                                                                     |
-| Node SG: NodePort tartomány (30000–32767) az NLB SG-ből            | Ide érkezik az NLB forgalma és a health check (`healthCheckNodePort` is ebből a tartományból van).                                                                     |
-| Addon sorrend: vpc-cni és kube-proxy a node-ok előtt, coredns után | A node-ok CNI nélkül nem lesznek Ready; a CoreDNS podjainak node kell, különben az addon DEGRADED marad.                                                               |
-| Access entry, `API` hitelesítési mód                               | Explicit admin hozzáférés a Terraformot futtató IAM usernek, aws-auth ConfigMap nélkül.                                                                                |
-| IMDSv2 (`http_tokens = required`), hop limit 2                     | Biztonságosabb metadata hozzáférés; a 2 kell ahhoz, hogy konténerből is elérhető legyen.                                                                               |
-| AWS Load Balancer Controller IRSA-val                              | Csak a controller ServiceAccountja kap ELB jogokat, nem az egész node.                                                                                                 |
-| LB Controller 3.6.2, a hivatalos `iam_policy.json` a repóban       | A 3.x óta a chart és a controller verziója egyezik; a policy JSON-nak a controller verziójához kell illeszkednie.                                                      |
-| Helm provider 3.x                                                  | A `kubernetes`, `exec` és `set` itt attribútum (`= { }`, `= [ ]`), nem blokk.                                                                                          |
-| Kubernetes 1.37                                                    | Standard támogatásban van (az extended support óradíja hatszoros), és illik a kubectl verziójához.                                                                     |
-| `t3.medium`                                                        | A VPC CNI miatt a pod limit az ENI-k számától függ: `t3.micro`/`t2.micro` 4, `t3.small` 11, `t3.medium` 17 pod/node. A free tier `t2.micro`-n nem férnének el a podok. |
-| ECR: `MUTABLE` tag, `force_delete`                                 | Gyakorlás közben felülírható tag; a `destroy` akkor is lefut, ha van image a repóban. Élesben `IMMUTABLE` ajánlott.                                                    |
-| Egy state                                                          | Kicsi projekt, egy kezelő, egyszerre jön létre és bomlik le minden.                                                                                                    |
+| Döntés                                                                           | Miért                                                                                                                                                                                                    |
+| -------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Saját modulok, registry modul nélkül                                             | A feladat IAM szerepeket és security groupokat kér; így mind látható és elmagyarázható.                                                                                                                  |
+| Modulhívások egy `main.tf`-ben, `data.tf` és `locals.tf` külön                   | Egy helyen látszik a projekt szerkezete. A sorrend csak olvashatóság, a létrehozás sorrendjét a függőségek döntik el.                                                                                    |
+| `for_each`, `count` nélkül                                                       | Stabil, név szerinti kulcsok (AZ név, repó név, policy név); egy elem törlése nem tolja el a többit.                                                                                                     |
+| Környezeti értékek a tfvars-ból, modulokban sincs környezeti alapérték           | A kód és a környezet beállításai külön vannak, és semmi nem érvényesül csendben (pl. az NLB nyitottsága). Kivétel a `lb_controller_chart_version`: az `iam_policy.json`-hoz kötődik, vagyis a kód része. |
+| Provider verziók: rootban `~>`, modulokban `>=`                                  | A root rögzít (és a lock fájl befagyaszt), a modul csak a minimumot jelzi; az `init` összefésüli.                                                                                                        |
+| AZ-k és subnet CIDR-ek kézzel, a tfvars térképéből                               | Kiszámítható: nem függ egy AWS lista sorrendjétől (data source + index), így nem cserélődhetnek a subnetek váratlanul. Régióváltáskor a tfvars-ban kell átírni.                                          |
+| Privát `/20`, publikus `/24` subnetek                                            | A VPC CNI miatt a podok is a privát subnetből kapnak IP-t; a publikusban csak az NLB és a NAT van.                                                                                                       |
+| `map_public_ip_on_launch = false`                                                | A publikus subnetekben nincs olyan gép, aminek automatikus publikus IP kellene.                                                                                                                          |
+| Egy NAT gateway                                                                  | Gyakorláshoz olcsóbb; élesben AZ-nként egy kellene (a modulban kommentben leírva, `for_each`-csel).                                                                                                      |
+| Különálló SG szabály erőforrások                                                 | Inline szabályoknál a Terraform törölné a controller által felvett szabályokat.                                                                                                                          |
+| SG szabályok security group hivatkozással (nem CIDR-rel)                         | Identitás alapú: bárki, akin az adott SG van, IP-től függetlenül; szűkebb és rugalmasabb.                                                                                                                |
+| Node SG: önmagára hivatkozó szabály                                              | Node-node és pod-pod forgalom (a podok a node ENI-jein kapnak IP-t).                                                                                                                                     |
+| Node SG: 443, 10250, 9443 a control plane-ből                                    | Webhookok, kubelet API (`kubectl logs/exec`), az LB Controller webhookja.                                                                                                                                |
+| Node SG: NodePort tartomány az NLB SG-ből                                        | Az NLB forgalma és a health check is a NodePortra érkezik (az SG a DNAT előtt vizsgál).                                                                                                                  |
+| Launch template a node groupnál                                                  | Enélkül az EKS a saját cluster SG-jét tenné a node-okra. AMI-t nem adunk meg, azt az EKS választja és frissíti az `ami_type` alapján.                                                                    |
+| IMDSv2, hop limit 1                                                              | A normál podok nem érik el a node szerep kulcsait; minden pod saját szerepet kap (IRSA) vagy semmit.                                                                                                     |
+| Bottlerocket                                                                     | Minimális, csak olvasható rendszerfájlokkal futó OS, kisebb támadási felület. AL2023-ra a tfvars egy sorával vissza lehet állni.                                                                         |
+| Node group `max_unavailable = 1`                                                 | Frissítéskor egyszerre egy régi node ürül ki; az EKS előbb új node-okat indít.                                                                                                                           |
+| Addon sorrend, `OVERWRITE`                                                       | A CNI a node-ok előtt, a CoreDNS utánuk; az `OVERWRITE` miatt a managed addon átveszi az EKS által induláskor telepített változatot.                                                                     |
+| Access entry `API` módban, `bootstrap_cluster_creator_admin_permissions = false` | A hozzáférés kizárólag a kódban van leírva (az automatikus admin bejegyzés ütközne a miénkkel, és nem lenne a state-ben).                                                                                |
+| `depends_on` a policy csatolásokra (cluster, node group, controller)             | A szerepre hivatkozás nem garantálja, hogy a policy már rajta van; törléskor pedig a policyk csak az erőforrás után kerüljenek le.                                                                       |
+| IRSA az LB Controllernek                                                         | Csak a controller ServiceAccountja kap ELB jogokat. A hivatalos policy tag alapú feltételekkel csak a saját erőforrásait engedi módosítani.                                                              |
+| Helm provider 3.x, `exec` alapú token                                            | A `kubernetes`, `exec`, `set` attribútum; az `exec` szükség szerint új tokent kér.                                                                                                                       |
+| LB Controller 3.6.2                                                              | A 3.x óta a chart és a controller verziója egyezik; a policy JSON ehhez a verzióhoz tartozik.                                                                                                            |
+| Kubernetes 1.37                                                                  | Standard támogatásban van (az extended support óradíja hatszoros), és illik a kubectl verziójához.                                                                                                       |
+| `t3.medium`                                                                      | A pod limit az ENI-k számától függ: `t2.micro`/`t3.micro` 4, `t3.small` 11, `t3.medium` 17 pod/node.                                                                                                     |
+| ECR: `MUTABLE`, `force_delete` a tfvars-ból; a modul alapértéke `false`          | Gyakorláshoz felülírható tag és törölhető repó; élesben `IMMUTABLE` és `false`. A modul biztonságos alapértelmezésű.                                                                                     |
+| Egy state                                                                        | Kicsi projekt, egy kezelő, egyszerre jön létre és bomlik le minden.                                                                                                                                      |
 
 ### Kubernetes és alkalmazások
 
-| Döntés                                                           | Miért                                                                                                                                                                                                                                                                                                      |
-| ---------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| nginx DaemonSet                                                  | Minden node-on fut egy proxy; bármelyik node kieshet, és az NLB a többire küld.                                                                                                                                                                                                                            |
-| Kustomize base + generált overlay                                | A base-ben nincs környezetfüggő érték, a git által követett fájlokat semmi nem írja át. Az image címet, a taget és az NLB SG ID-t (ami minden `apply` után új) a `render.sh` írja egy gitignore-olt overlay-be. Csapatban környezetenkénti, commitolt overlayek lennének, és a CI állítaná az image taget. |
-| A Service neve, `selector`-a és `targetPort`-ja                  | Mindhárom egy másik fájlhoz köt: a név az nginx ConfigMap DNS nevéhez (`service-a.demo.svc.cluster.local`), a selector a pod labeljeihez, a `targetPort` a konténer portjához.                                                                                                                             |
-| `aws-load-balancer-type: external` + `scheme: internet-facing`   | Különben belső NLB jönne létre.                                                                                                                                                                                                                                                                            |
-| `target-type: instance` + `externalTrafficPolicy: Local`         | Nincs extra ugrás node-ok között, nincs SNAT, megmarad a kliens IP, és csak az egészséges nginx-et futtató node-ok kapnak forgalmat. DaemonSet mellett az elosztás így is egyenletes.                                                                                                                      |
-| Saját NLB security group + `manage-backend-security-group-rules` | A feladat kéri; a controller a node SG-be felveszi a szükséges bejövő szabályt.                                                                                                                                                                                                                            |
-| `nginx-unprivileged`, 8080-as port                               | Nem rootként fut.                                                                                                                                                                                                                                                                                          |
-| `runAsNonRoot: true`, a Dockerfile-ban `USER 10001`              | A kubelet nem indítja el a konténert, ha rootként futna. Számmal (UID) kell megadni, mert névből (`USER appuser`) nem tudja ellenőrizni.                                                                                                                                                                   |
-| Memória limit, CPU limit nélkül                                  | A memória limit átlépésekor OOMKill (a node és a többi pod védelme); CPU limit nélkül nincs felesleges throttling, a request az ütemezéshez kell.                                                                                                                                                          |
-| readiness és liveness probe a `/healthz`-en                      | A readiness dönti el, kap-e forgalmat a pod (EndpointSlice), a liveness újraindítja, ha leállt. Startup probe nem kell, mert a Flask gyorsan indul.                                                                                                                                                        |
-| `proxy_pass` perjel nélkül                                       | A teljes útvonal (`/api/sa`) továbbmegy, a Flask pont erre figyel.                                                                                                                                                                                                                                         |
-| Service DNS név, nem IP                                          | A ClusterIP állandó; a pod IP-k változnak.                                                                                                                                                                                                                                                                 |
-| `X-Forwarded-For`, `X-Real-IP`                                   | Az nginx és az app közötti kapcsolatban már az nginx a feladó; az eredeti kliens IP ezekből derül ki.                                                                                                                                                                                                      |
-| `/healthz` minden komponensen                                    | Readiness probe-ok és az NLB health check.                                                                                                                                                                                                                                                                 |
-| gunicorn a Flask fejlesztői szervere helyett                     | Élesre alkalmas, több worker; exec formájú `CMD`, így PID 1-ként megkapja a `SIGTERM`-et.                                                                                                                                                                                                                  |
-| Multi-stage Dockerfile, venv a `/opt/venv`-ben                   | A futtatott image-be csak a kész függőségek kerülnek; az útvonal mindkét szakaszban azonos, mert a venv szkriptjei abszolút útvonalra hivatkoznak.                                                                                                                                                         |
-| `buildx --platform linux/amd64`                                  | ARM gépen buildelt image nem futna x86 node-on.                                                                                                                                                                                                                                                            |
+| Döntés                                                                   | Miért                                                                                                                                                      |
+| ------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| nginx DaemonSet                                                          | A feladat kéri; minden node-on fut egy proxy, bármelyik node kieshet, és a `Local` policyval egyenletes az elosztás.                                       |
+| Kustomize base + generált overlay                                        | A base-ben nincs környezetfüggő érték; az image címet, a taget és az NLB SG ID-t (minden `apply` után új) a `render.sh` írja egy gitignore-olt overlay-be. |
+| A Service neve, `selector`-a és `targetPort`-ja                          | A név az nginx konfiguráció DNS nevéhez, a selector a pod template labeljeihez, a `targetPort` a konténer portjához köt.                                   |
+| `aws-load-balancer-type: external` + `scheme: internet-facing`           | Az LB Controller kezelje, és publikus NLB legyen (alapból belső lenne).                                                                                    |
+| `target-type: instance` + `externalTrafficPolicy: Local`                 | Nincs extra ugrás és SNAT, megmarad a kliens IP, és csak az egészséges nginx-et futtató node-ok kapnak forgalmat.                                          |
+| Saját NLB SG + `manage-backend-security-group-rules`                     | A feladat kéri; a controller a node SG-be is felveszi a szabályt (a Terraformos szabály mellett).                                                          |
+| ConfigMap mappaként csatolva (`/etc/nginx/conf.d`)                       | A kubelet a ConfigMap változását a fájlba is átviszi (a `subPath` nem); az nginx-et így is újra kell indítani.                                             |
+| `proxy_pass` perjel nélkül                                               | A teljes útvonal (`/api/sa`) továbbmegy, a Flask erre figyel.                                                                                              |
+| `X-Forwarded-For`, `X-Real-IP`, `Host`                                   | Az nginx és az app közötti kapcsolatban már az nginx a feladó; az eredeti adatok ezekből derülnek ki.                                                      |
+| nginx: `nginx-unprivileged`, 8080, `runAsNonRoot`, readiness + liveness  | Nem rootként fut; a readiness a forgalmat, a liveness az újraindítást szabályozza.                                                                         |
+| nginx DaemonSet `maxSurge: 1`, `maxUnavailable: 0`                       | Frissítéskor az új pod a régi leállítása előtt indul, így nincs kiesés egyik node-on sem.                                                                  |
+| Appok: `runAsNonRoot`, Dockerfile-ban `USER 10001`                       | Számmal kell megadni, mert névből a kubelet nem tudja ellenőrizni, hogy nem root.                                                                          |
+| Memória limit, CPU limit nélkül                                          | A memória limit védi a node-ot (OOMKill); CPU limit nélkül nincs felesleges throttling.                                                                    |
+| gunicorn, exec formájú `CMD`                                             | Élesre alkalmas szerver; PID 1-ként megkapja a `SIGTERM`-et.                                                                                               |
+| Multi-stage Dockerfile, venv a `/opt/venv`-ben                           | A futtatott image-be csak a kész függőségek kerülnek; az útvonal mindkét szakaszban azonos (abszolút shebangek).                                           |
+| Rögzített függőségek (`flask==3.1.3`, `gunicorn==26.2.0`)                | Minden build ugyanazokat a verziókat telepíti.                                                                                                             |
+| `buildx --platform linux/amd64`                                          | ARM gépen buildelt image nem futna az x86 node-okon.                                                                                                       |
+| A scriptek csak bash, AWS CLI, Terraform és Docker eszközöket használnak | Nincs plusz telepítendő függőség (pl. `jq`).                                                                                                               |
 
 ## Ha valami nem működik
 
-| Tünet                                                                    | Valószínű ok                                                                                            | Ellenőrzés / megoldás                                                                                  |
-| ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| `Unexpected block: Blocks of type "set"/"kubernetes"`                    | Helm provider 3.x, régi blokk szintaxis                                                                 | `kubernetes = { ... }`, `set = [ ... ]`; `terraform init -upgrade`                                     |
-| `No declaration found for "var.X"` / `Unexpected attribute` a tfvars-ban | Hiányzik a `variable "X"` blokk a root `variables.tf`-ben                                               | Deklaráld a változót                                                                                   |
-| `no addon version found` a plan-nél                                      | Az addon még nem érhető el a választott Kubernetes verzióhoz                                            | Válassz eggyel régebbi verziót (`aws eks describe-cluster-versions`)                                   |
-| `kubectl`: `Unauthorized`                                                | Más AWS identitással vagy, mint aki a clustert létrehozta                                               | `aws sts get-caller-identity`                                                                          |
-| Podok `Pending`, pedig van szabad CPU és memória                         | Elfogyott a node pod limitje (ENI alapú)                                                                | `kubectl describe pod`, nagyobb instance típus                                                         |
-| Pod `CreateContainerConfigError`: „image has non-numeric user”           | `runAsNonRoot: true`, de a Dockerfile-ban név szerepel a `USER` sorban                                  | `USER 10001` a Dockerfile-ban, újrabuildelés és push                                                   |
-| App podok `ImagePullBackOff`                                             | Rossz ECR cím vagy tag, nem futott a `render.sh`, vagy a node szerepnek nincs ECR joga                  | `kubectl describe pod`, `kubectl kustomize k8s/overlays/local \| grep image`                           |
-| App pod `CrashLoopBackOff`, `exec format error`                          | ARM image x86 node-on                                                                                   | Buildeld újra `--platform linux/amd64`-gyel                                                            |
-| nginx pod `CrashLoopBackOff`, „host not found in upstream”               | A Service-ek még nem léteztek az nginx indulásakor, vagy eltér a Service neve                           | `kubectl get svc -n demo`, majd `kubectl rollout restart ds/nginx-proxy -n demo`                       |
-| `EXTERNAL-IP` sokáig `<pending>`                                         | A controller nem fut, nincs joga, hiányzik a subnet tag, vagy régi (már törölt) SG ID van az overlayben | `kubectl logs -n kube-system deploy/aws-load-balancer-controller`; `./scripts/render.sh` újrafuttatása |
-| Az NLB létrejött, de nem válaszol                                        | Belső NLB lett, hiányzik egy SG szabály, vagy a targetek unhealthy                                      | EC2 konzol → Target Groups → Health, és a Service annotációi                                           |
-| `/api/sa` 404                                                            | `proxy_pass` perjellel a végén levágja az útvonalat                                                     | `kubectl get cm nginx-proxy-conf -n demo -o yaml`                                                      |
-| `/api/sa` 502                                                            | A Service mögött nincs ready pod, nem egyezik a `selector`, vagy rossz a `targetPort`                   | `kubectl get endpointslices -n demo`, `kubectl logs -n demo ds/nginx-proxy`                            |
-| ConfigMap módosítás után nincs változás                                  | Az nginx nem tölti újra magától                                                                         | `kubectl rollout restart ds/nginx-proxy -n demo`                                                       |
-| `terraform destroy` elakad a VPC-n                                       | Az NLB még létezik (nem a Terraform hozta létre)                                                        | `./scripts/teardown.sh`, vagy előbb `kubectl delete -k k8s/base`                                       |
+| Tünet                                                                    | Valószínű ok                                                                                                                              | Ellenőrzés / megoldás                                                                                                                     |
+| ------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| A `plan` erőforrásszáma eltér az 54-től                                  | Egy ottfelejtett vagy duplikált `.tf` fájl                                                                                                | `ls terraform/`, `grep` a gyanús erőforrásnévre                                                                                           |
+| A szerkesztő hibát jelez, a `validate` nem                               | A szerkesztő Terraform kiegészítője elavult állapotot lát                                                                                 | VS Code: „Developer: Reload Window”; a `validate` és a `plan` a mérvadó                                                                   |
+| `Unexpected block: Blocks of type "set"/"kubernetes"`                    | Helm provider 3.x, régi blokk szintaxis                                                                                                   | `kubernetes = { ... }`, `set = [ ... ]`; `terraform init -upgrade`                                                                        |
+| `No declaration found for "var.X"` / `Unexpected attribute` a tfvars-ban | Hiányzik a `variable "X"` blokk                                                                                                           | Deklaráld a változót a root `variables.tf`-ben                                                                                            |
+| `no addon version found` a plan-nél                                      | Az addon nem érhető el a választott Kubernetes verzióhoz                                                                                  | Eggyel régebbi verzió (`aws eks describe-cluster-versions`)                                                                               |
+| A node group létrehozása elhasal Bottlerocket mellett                    | A Bottlerocket nem érhető el a választott Kubernetes verzióhoz                                                                            | `node_ami_type = "AL2023_x86_64_STANDARD"` a tfvars-ban                                                                                   |
+| `kubectl`: `Unauthorized` vagy ismeretlen kontextus                      | Más AWS identitás, vagy a kubectl egy régi clusterre mutat                                                                                | `aws sts get-caller-identity`, `kubectl config current-context`, a `kubeconfig_command` újrafuttatása                                     |
+| Podok `Pending`, pedig van szabad CPU és memória                         | Elfogyott a node pod limitje (ENI alapú)                                                                                                  | `kubectl describe pod`, nagyobb instance típus                                                                                            |
+| Pod `CreateContainerConfigError`: „non-numeric user”                     | `runAsNonRoot: true`, de az image névvel adja meg a felhasználót                                                                          | Számmal: `USER 10001` (vagy `runAsUser` a podon)                                                                                          |
+| App podok `ImagePullBackOff`                                             | Rossz ECR cím vagy tag, nem futott a `render.sh`, vagy eltér a build-push és a render tagje                                               | `kubectl describe pod`, `kubectl kustomize k8s/overlays/local \| grep image`                                                              |
+| App pod `CrashLoopBackOff`, `exec format error`                          | ARM image x86 node-on                                                                                                                     | Buildeld újra `--platform linux/amd64`-gyel                                                                                               |
+| nginx pod: „host not found in upstream”                                  | A Service-ek még nem léteztek az nginx indulásakor, vagy eltér a Service neve                                                             | `kubectl get svc -n demo`, majd `kubectl rollout restart ds/nginx-proxy -n demo`                                                          |
+| `EXTERNAL-IP` sokáig `<pending>`                                         | A controller nem fut vagy nincs joga, hiányzik a subnet tag, régi SG ID van az overlayben, vagy a 3.x controller nem ismer egy annotációt | `kubectl describe svc nginx-proxy -n demo`, `kubectl logs -n kube-system deploy/aws-load-balancer-controller`, `./scripts/render.sh` újra |
+| Az NLB létrejött, de nem válaszol                                        | Belső NLB lett, hiányzik egy SG szabály, vagy a targetek unhealthy                                                                        | EC2 konzol → Target Groups → Health                                                                                                       |
+| `/api/sa` 404                                                            | `proxy_pass` perjellel a végén levágja az útvonalat                                                                                       | `kubectl get cm nginx-proxy-conf -n demo -o yaml`                                                                                         |
+| `/api/sa` 502                                                            | Nincs ready pod, nem egyezik a `selector`, vagy rossz a `targetPort`                                                                      | `kubectl get endpointslices -n demo`, `kubectl logs -n demo ds/nginx-proxy`                                                               |
+| ConfigMap módosítás után nincs változás                                  | Az nginx nem tölti újra magától                                                                                                           | `kubectl rollout restart ds/nginx-proxy -n demo`                                                                                          |
+| `terraform destroy` elakad a VPC-n                                       | Az NLB még létezik (a controller hozta létre)                                                                                             | `./scripts/teardown.sh`, vagy előbb `kubectl delete -k k8s/base`                                                                          |
+| `git rm`: „local modifications”                                          | A fájl módosult a legutóbbi commit óta                                                                                                    | Ha a tartalma máshol megvan: `git rm -f`                                                                                                  |
 
 ## Költség
 
@@ -187,17 +277,23 @@ A szkript a helyes sorrendben bont: **először** a Kubernetes erőforrásokat (
 | Publikus IPv4 címek | 0,01–0,02 $            |
 | **Összesen**        | **kb. 0,33 $/óra**     |
 
-Egy próbakör a létrehozással és a lebontással együtt kb. 1,5–2 óra futásidő. A legnagyobb kockázat a lebontás után bent maradt erőforrás, ezért a `teardown.sh` a végén ellenőriz.
+Egy próbakör a létrehozással és a lebontással együtt kb. 1,5–2 óra futásidő, nagyjából 0,5–0,7 $. A legnagyobb kockázat egy bent maradt erőforrás (pl. az NLB vagy a NAT gateway), ezért a `teardown.sh` a végén ellenőriz.
 
 ## Továbbfejlesztési ötletek
 
-- **A state kettébontása** egy `infra` (VPC, EKS, ECR) és egy `platform` (LB Controller, Helm) root modulra. A Helm provider most egy ugyanabban a futásban létrejövő clusterhez csatlakozik; külön rétegben egy már létező cluster adataiból (`data "aws_eks_cluster"`) konfigurálódna. Futtatás: előbb `infra`, utána `platform`; lebontás fordítva.
-- **Remote state S3-ban.** A bucketet előre, külön (CLI-vel vagy egy külön bootstrap konfigurációval) kell létrehozni, mert az `init` már keresi. Utána a root `versions.tf` `terraform` blokkjába kerül egy `backend "s3" { bucket, key, region, use_lockfile = true }`, és `terraform init -migrate-state` átköltözteti a helyi state-et. Zároláshoz DynamoDB már nem kell. A state bucketet a környezet lebontásakor sem törölnénk: csak akkor, ha a `destroy` biztosan maradéktalanul lefutott, verziózott bucketnél az összes objektumverzió törlése után.
-- **Image tag a git commitból** (`git rev-parse --short HEAD`) a rögzített `1.0.0` helyett, és `IMMUTABLE` ECR repók: így egy tag mögött soha nem cserélődhet ki az image.
-- **CI/CD:** GitHub Actions pipeline a build-push és a telepítés automatizálására, környezetenkénti, commitolt overlayekkel, vagy Argo CD GitOps-hoz.
-- **Pod Security Admission** labelek a `demo` namespace-en (`pod-security.kubernetes.io/enforce: restricted`).
+- **EKS Pod Identity** az IRSA helyett: nem kell OIDC provider (és vele a `tls` provider), egyszerűbb trust policy, egy `eks-pod-identity-agent` addon és egy `aws_eks_pod_identity_association`.
+- **Gateway API** az nginx ConfigMap és DaemonSet helyett (pl. NGINX Gateway Fabric vagy az LB Controller Gateway API támogatása): szabványos, szerep alapú (GatewayClass, Gateway, HTTPRoute). Az ingress-nginx controllert a Kubernetes projekt kivezette.
+- **Karpenter** a node-ok dinamikus kezelésére; a lebontásnál a Karpenter által indított node-okat a `terraform destroy` előtt kell eltávolítani.
+- **HPA és metrics-server** a Service A független, terhelés alapú skálázásához.
+- **A state kettébontása** `infra` és `platform` rétegre: a Helm provider egy már létező cluster adataiból konfigurálódna.
+- **Remote state S3-ban:** a `versions.tf`-ben előkészítve (lásd fent).
+- **Architektúra ellenőrzés precondition-nel:** az `aws_ec2_instance_type` data source-szal ellenőrizni, hogy az AMI típus és az instance típus architektúrája egyezik.
+- **HTTPS:** ACM tanúsítvány az NLB-n (TLS listener), ehhez saját domain kell.
 - `target-type: ip`: az NLB közvetlenül az nginx podokra küld (a NodePort ugrás kimarad).
-- Ha `externalTrafficPolicy: Cluster` kellene, a kliens IP a **Proxy Protocol v2**-vel őrizhető meg (NLB annotáció + `listen ... proxy_protocol` az nginx-ben).
-- HTTPS: ACM tanúsítvány az NLB-n (TLS listener), vagy TLS az nginx-ben.
+- Ha `externalTrafficPolicy: Cluster` kellene, a kliens IP **Proxy Protocol v2**-vel őrizhető meg.
+- **ProxyFix** a Flaskben, ha az appnak kellene a valódi kliens IP.
+- **ECR:** lifecycle policy a régi image-ek törlésére, regiszter szintű (Inspector) szkennelés, `IMMUTABLE` tagek a git commit azonosítójával.
+- **`ecr_registry` output**, hogy a scriptek `jq` nélkül, a Terraformból kapják a regiszter címét.
 - `preStop` hook és `terminationGracePeriodSeconds` az nginx-re, a frissítés közbeni 502-k ellen.
-- Az nginx ConfigMap helyett **Gateway API** (GatewayClass, Gateway, HTTPRoute), az Ingress utódja.
+- **Pod Security Admission** labelek a `demo` namespace-en (`pod-security.kubernetes.io/enforce: restricted`).
+- **CI/CD:** GitHub Actions a build-push és a telepítés automatizálására, környezetenkénti, commitolt overlayekkel, vagy Argo CD GitOps-hoz.
