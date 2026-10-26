@@ -14,8 +14,28 @@ variable "kubernetes_version" {
 }
 
 variable "vpc_cidr" {
-  description = "A VPC címtartománya; a subnetek ebből számolódnak (cidrsubnet)"
+  description = "A VPC címtartománya; a subnets CIDR-jeinek ebbe kell esniük"
   type        = string
+}
+
+variable "subnets" {
+  description = "Subnetek AZ-nként: a kulcs az AZ neve, az érték a privát és a publikus subnet CIDR-je"
+  type = map(object({
+    private_cidr = string
+    public_cidr  = string
+  }))
+
+  validation {
+    condition     = length(var.subnets) >= 2
+    error_message = "Az EKS-hez legalább 2 AZ kell."
+  }
+
+  validation {
+    condition = alltrue(flatten([
+      for s in values(var.subnets) : [can(cidrhost(s.private_cidr, 0)), can(cidrhost(s.public_cidr, 0))]
+    ]))
+    error_message = "Minden private_cidr és public_cidr érvényes CIDR legyen (pl. 10.0.0.0/20)."
+  }
 }
 
 variable "node_instance_types" {

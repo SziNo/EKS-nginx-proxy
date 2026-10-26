@@ -15,3 +15,12 @@ cluster_endpoint_public_access_cidrs = ["0.0.0.0/0"]
 
 # Honnan érhető el az NLB (a 80-as port); nyilvános szolgáltatásnál az egész internet
 nlb_ingress_cidrs = ["0.0.0.0/0"]
+
+# Subnetek AZ-nként, kézzel rögzítve (nem data source-ból), így kiszámítható és nem változik magától.
+# A privát /20-asok nagyok, mert a VPC CNI miatt a podok is innen kapnak IP-t; a publikus /24-ekben
+# csak az NLB és a NAT gateway van. Minden CIDR-nek a vpc_cidr-be kell esnie, és nem fedhetik egymást.
+subnets = {
+  "eu-west-1a" = { private_cidr = "10.0.0.0/20", public_cidr = "10.0.48.0/24" }
+  "eu-west-1b" = { private_cidr = "10.0.16.0/20", public_cidr = "10.0.49.0/24" }
+  "eu-west-1c" = { private_cidr = "10.0.32.0/20", public_cidr = "10.0.50.0/24" }
+}

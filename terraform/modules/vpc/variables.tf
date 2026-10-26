@@ -4,18 +4,19 @@ variable "name" {
 }
 
 variable "vpc_cidr" {
-  description = "A VPC címtartománya (legalább /16, hogy a /20-as privát subnetek beleférjenek)"
+  description = "A VPC címtartománya"
   type        = string
 }
 
-variable "azs" {
-  description = "Availability zone-ok listája; mindegyikbe 1 publikus és 1 privát subnet kerül"
-  type        = list(string)
+variable "subnets" {
+  description = "Subnetek AZ-nként: a kulcs az AZ neve, az érték a privát és a publikus subnet CIDR-je"
+  type = map(object({
+    private_cidr = string
+    public_cidr  = string
+  }))
 
-  # A subnet-kiosztás (lásd main.tf locals) legfeljebb 3 AZ-ra van méretezve:
-  # 4 AZ esetén a 4. privát /20 átfedne a publikus /24-ekkel.
   validation {
-    condition     = length(var.azs) >= 2 && length(var.azs) <= 3
-    error_message = "Az EKS-hez legalább 2, ehhez a subnet-kiosztáshoz legfeljebb 3 AZ kell."
+    condition     = length(var.subnets) >= 2
+    error_message = "Az EKS-hez legalább 2 AZ kell."
   }
 }

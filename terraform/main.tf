@@ -11,13 +11,14 @@ module "ecr" {
   force_delete         = true      # a destroy akkor is lefut, ha van image a repóban
 }
 
-# Hálózat: VPC, publikus és privát subnetek 3 AZ-ban, internet és NAT gateway, route táblák.
+# Hálózat: VPC, publikus és privát subnetek AZ-nként (a tfvars subnets térképéből),
+# internet és NAT gateway, route táblák.
 module "vpc" {
   source = "./modules/vpc"
 
   name     = var.cluster_name
   vpc_cidr = var.vpc_cidr
-  azs      = local.azs
+  subnets  = var.subnets
 }
 
 # EKS cluster: IAM szerepek, security groupok (az NLB-é is), cluster, addonok,

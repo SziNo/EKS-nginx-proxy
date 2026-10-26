@@ -1,12 +1,12 @@
 locals {
-  # AZ név => CIDR térképek; a for_each ezeken megy végig, a kulcs az AZ neve (stabil, nem index).
-  # 10.0.0.0/16 esetén:
-  #   privát:   cidrsubnet(/16, 4, 0..2)  -> 10.0.0.0/20, 10.0.16.0/20, 10.0.32.0/20
-  #             (nagyok, mert a VPC CNI miatt a podok is innen kapnak IP-t)
-  #   publikus: cidrsubnet(/16, 8, 48..50) -> 10.0.48.0/24, 10.0.49.0/24, 10.0.50.0/24
-  #             (csak az NLB és a NAT gateway van itt, kicsi is elég)
-  private_subnets = { for i, az in var.azs : az => cidrsubnet(var.vpc_cidr, 4, i) }
-  public_subnets  = { for i, az in var.azs : az => cidrsubnet(var.vpc_cidr, 8, 48 + i) }
+  # AZ név => CIDR térképek a for_each-hez; a kulcs az AZ neve (stabil, nem index),
+  # az érték a tfvars-ban kézzel megadott tartomány.
+  private_subnets = { for az, s in var.subnets : az => s.private_cidr }
+  public_subnets  = { for az, s in var.subnets : az => s.public_cidr }
+
+  # A NAT gateway helye: az első AZ ábécésorrendben (a keys() rendezve adja vissza a kulcsokat),
+  # így mindig ugyanaz, nem függ a tfvars-beli sorrendtől.
+  nat_az = keys(var.subnets)[0]
 }
 
 # A VPC maga. A DNS támogatás és a DNS hostnevek kellenek az EKS-hez
@@ -92,7 +92,7 @@ resource "aws_eip" "nat" {
 # Mivel minden kulcs az AZ neve, minden privát subnet a saját AZ-jában lévő NAT-ot használná.
 resource "aws_nat_gateway" "this" {
   allocation_id = aws_eip.nat.id
-  subnet_id     = aws_subnet.public[var.azs[0]].id
+  subnet_id     = aws_subnet.public[local.nat_az].id
 
   tags = {
     Name = "${var.name}-nat"
