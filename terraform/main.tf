@@ -32,11 +32,13 @@ module "eks" {
   subnet_ids = module.vpc.private_subnet_ids # a control plane ENI-k és a node-ok is a privát subnetekben
 
   node_instance_types = var.node_instance_types
+  node_ami_type       = var.node_ami_type
   node_desired_size   = var.node_desired_size
   node_min_size       = var.node_min_size
   node_max_size       = var.node_max_size
 
   endpoint_public_access_cidrs = var.cluster_endpoint_public_access_cidrs
+  nlb_ingress_cidrs            = var.nlb_ingress_cidrs
 
   # Aki a Terraformot futtatja (IAM user), cluster admin lesz
   cluster_admin_principal_arns = [data.aws_caller_identity.current.arn]

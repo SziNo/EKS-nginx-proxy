@@ -23,6 +23,11 @@ variable "node_instance_types" {
   type        = list(string)
 }
 
+variable "node_ami_type" {
+  description = "A node-ok AMI típusa; illeszkednie kell a node_instance_types architektúrájához (t3 = x86)"
+  type        = string
+}
+
 variable "cluster_endpoint_public_access_cidrs" {
   description = "Mely IP-tartományokból érhető el a publikus EKS API endpoint (gyakorláshoz mindenhonnan; élesben szűkítsd a saját IP-dre)"
   type        = list(string)
@@ -47,4 +52,9 @@ variable "lb_controller_chart_version" {
   description = "Az aws-load-balancer-controller Helm chart verziója; a 3.x óta megegyezik a controller verziójával, és a modules/lb-controller/iam_policy.json-nak ehhez kell illeszkednie. Ennek marad alapértéke, mert a policy JSON-hoz kötődik, vagyis a kód része."
   type        = string
   default     = "3.6.2"
+}
+
+variable "nlb_ingress_cidrs" {
+  description = "Honnan érhető el az NLB a 80-as porton"
+  type        = list(string)
 }
