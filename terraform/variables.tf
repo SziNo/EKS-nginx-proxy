@@ -78,3 +78,13 @@ variable "nlb_ingress_cidrs" {
   description = "Honnan érhető el az NLB a 80-as porton"
   type        = list(string)
 }
+
+variable "ecr_image_tag_mutability" {
+  description = "MUTABLE: ugyanaz a tag felülírható (gyakorláshoz); IMMUTABLE: egy tag csak egyszer tölthető fel (élesben ajánlott)"
+  type        = string
+}
+
+variable "ecr_force_delete" {
+  description = "true: a repó akkor is törölhető, ha van benne image (gyakorláshoz, hogy a destroy lefusson); élesben false"
+  type        = bool
+}

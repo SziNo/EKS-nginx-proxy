@@ -7,8 +7,8 @@ module "ecr" {
   source = "./modules/ecr"
 
   repository_names     = local.services
-  image_tag_mutability = "MUTABLE" # gyakorlás közben ugyanaz a tag felülírható; élesben IMMUTABLE ajánlott
-  force_delete         = true      # a destroy akkor is lefut, ha van image a repóban
+  image_tag_mutability = var.ecr_image_tag_mutability
+  force_delete         = var.ecr_force_delete
 }
 
 # Hálózat: VPC, publikus és privát subnetek AZ-nként (a tfvars subnets térképéből),
