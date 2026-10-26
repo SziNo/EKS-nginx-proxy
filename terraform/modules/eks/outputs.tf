@@ -20,7 +20,7 @@ output "oidc_provider_arn" {
 
 output "oidc_provider_url" {
   description = "Az OIDC kibocsátó címe https:// nélkül (IRSA trust policy feltételeihez)"
-  value       = replace(aws_eks_cluster.this.identity[0].oidc[0].issuer, "https://", "")
+  value       = replace(local.oidc_issuer, "https://", "")
 }
 
 output "cluster_security_group_id" {
@@ -34,7 +34,7 @@ output "node_security_group_id" {
 }
 
 output "nlb_security_group_id" {
-  description = "Az NLB security groupja (a k8s/nginx-service.yaml annotációjába kerül)"
+  description = "Az NLB security groupja (a render.sh az overlay patch-ével a Service annotációjába írja)"
   value       = aws_security_group.nlb.id
 }
 

@@ -42,8 +42,9 @@ resource "aws_security_group" "node" {
   }
 }
 
-# Security group az NLB-nek (a feladat kéri). A k8s/nginx-service.yaml annotációjában adjuk át
-# a controllernek (a scripts/render.sh tölti ki az nlb_security_group_id outputból).
+# Security group az NLB-nek. Az azonosítóját az nlb_security_group_id output adja ki,
+# a scripts/render.sh pedig a generált overlay patch-ével beírja a Service annotációjába
+# (service.beta.kubernetes.io/aws-load-balancer-security-groups).
 resource "aws_security_group" "nlb" {
   name        = "${var.cluster_name}-nlb"
   description = "Public NLB in front of the nginx DaemonSet"

@@ -7,7 +7,7 @@ resource "aws_launch_template" "node" {
   name_prefix            = "${var.cluster_name}-node-"
   vpc_security_group_ids = [aws_security_group.node.id]
 
-   metadata_options {
+  metadata_options {
     http_endpoint = "enabled"
     # IMDSv2 kötelező: az instance metadata (és benne a node szerep ideiglenes kulcsai) csak
     # előzetesen kért tokennel olvasható. Ez véd az SSRF típusú támadások ellen, ahol egy
