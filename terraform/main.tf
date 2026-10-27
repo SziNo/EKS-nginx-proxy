@@ -2,10 +2,12 @@
 # a Terraform a hivatkozásokból (függőségekből) dönti el.
 
 # ECR repók a két alkalmazás image-ének (for_each a szolgáltatás nevével).
+# A repók neve <cluster_name>/<szolgáltatás>, pl. szino-nginx-proxy-demo/service-a.
 # Független a többitől, ezért a Terraform a VPC-vel párhuzamosan hozza létre.
 module "ecr" {
   source = "./modules/ecr"
 
+  name_prefix          = var.cluster_name
   repository_names     = local.services
   image_tag_mutability = var.ecr_image_tag_mutability
   force_delete         = var.ecr_force_delete

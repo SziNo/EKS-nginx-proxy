@@ -1,5 +1,16 @@
+variable "name_prefix" {
+  description = "A repó nevek előtagja (pl. a cluster neve); a repók neve <előtag>/<szolgáltatás> lesz"
+  type        = string
+
+  # Az ECR repó név csak kisbetűt, számot és a . _ - / jeleket tartalmazhat
+  validation {
+    condition     = can(regex("^[a-z0-9][a-z0-9._-]*$", var.name_prefix))
+    error_message = "Az előtag csak kisbetűt, számot és . _ - jeleket tartalmazhat, és betűvel vagy számmal kezdődjön."
+  }
+}
+
 variable "repository_names" {
-  description = "A létrehozandó ECR repók nevei (mindegyikből egy repó lesz)"
+  description = "A szolgáltatások nevei; mindegyikből egy <előtag>/<név> repó lesz"
   type        = set(string)
 }
 

@@ -80,7 +80,7 @@ A `plan` **54** erőforrást mutat (`54 to add, 0 to change, 0 to destroy`). Ha 
 - **OIDC provider:** az IRSA alapja. A `tls` provider csak ahhoz kell, hogy az OIDC kibocsátó tanúsítványának ujjlenyomatát kiolvassa; **a forgalomhoz nincs köze**, a projektben nincs TLS/HTTPS.
 - **Access entry:** a Terraformot futtató IAM identitás `AmazonEKSClusterAdminPolicy`-t kap az egész clusterre.
 
-**`ecr` modul:** a `service-a` és `service-b` repó, feltöltéskori szkenneléssel.
+**`ecr` modul:** a `<cluster_name>/service-a` és `<cluster_name>/service-b` repó (pl. `szino-nginx-proxy-demo/service-a`), feltöltéskori szkenneléssel.
 
 **`lb-controller` modul:** az AWS Load Balancer Controller IAM szerepe IRSA-val (csak a `kube-system/aws-load-balancer-controller` ServiceAccount veheti fel), a hivatalos IAM policy, és a controller telepítése **Helm**-mel (chart 3.6.2). Ez a controller hozza létre az NLB-t a Kubernetes Service alapján.
 
@@ -194,10 +194,11 @@ curl -s http://$NLB/api/sa > /dev/null
 kubectl logs -n demo -l app=nginx-proxy --tail=5 --prefix
 ```
 
-**IRSA:** az LB Controller ServiceAccountján ott a szerep ARN-je.
+**IRSA:** az LB Controller ServiceAccountján ott a szerep ARN-je; a két controller pod közül a vezetőt a lease mutatja.
 
 ```bash
 kubectl get sa aws-load-balancer-controller -n kube-system -o jsonpath='{.metadata.annotations}'
+kubectl get lease -n kube-system aws-load-balancer-controller-leader
 ```
 
 **A Service A független skálázása:**
@@ -232,7 +233,7 @@ kubectl get pods -n demo -o wide -w                               # a podok átk
 ./scripts/teardown.sh
 ```
 
-A szkript a helyes sorrendben bont: **először** a Kubernetes erőforrásokat (`kubectl delete -k k8s/base`; így a controller törli az NLB-t, amit nem a Terraform hozott létre), megvárja, amíg az NLB eltűnik, utána `terraform destroy` (jóváhagyást kér, `yes`-t kell beírni), végül listázza a régió load balancereit, futó NAT gatewayeit és EKS clustereit. Törléshez a base elég, mert a `delete` csak a neveket nézi.
+A szkript a helyes sorrendben bont: **először** a Kubernetes erőforrásokat (`kubectl delete -k k8s/base`; így a controller törli az NLB-t, amit nem a Terraform hozott létre), megvárja, amíg az NLB eltűnik, utána `terraform destroy` (jóváhagyást kér, `yes`-t kell beírni), végül listázza a régió load balancereit, futó NAT gatewayeit és EKS clustereit. Törléshez a base elég, mert a `delete` csak a neveket nézi. Az ECR repók az image-ekkel együtt törlődnek (`force_delete`).
 
 A helyben maradt Docker image-ek takarítása (az ECR-t nem érinti):
 
@@ -299,6 +300,7 @@ aws ec2 describe-network-interfaces --region eu-west-1 \
 | Kubernetes 1.37                                                                  | Standard támogatásban van (az extended support óradíja hatszoros), és illik a kubectl verziójához.                                                                                                       |
 | `t3.medium`                                                                      | A pod limit az ENI-k számától függ: `t2.micro`/`t3.micro` 4, `t3.small` 11, `t3.medium` 17 pod/node.                                                                                                     |
 | ECR: `MUTABLE`, `force_delete` a tfvars-ból; a modul alapértéke `false`          | Gyakorláshoz felülírható tag és törölhető repó; élesben `IMMUTABLE` és `false`. A modul biztonságos alapértelmezésű.                                                                                     |
+| ECR repó nevek `<cluster_name>/<szolgáltatás>` formában                          | Az ECR nevek fiókon belül régiónként egyediek; az előtag miatt több projekt vagy ember sem ütközik, és a konzolban egy „mappába” kerülnek.                                                               |
 | Egy state                                                                        | Kicsi projekt, egy kezelő, egyszerre jön létre és bomlik le minden.                                                                                                                                      |
 
 ### Kubernetes és alkalmazások
