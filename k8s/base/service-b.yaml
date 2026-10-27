@@ -18,27 +18,27 @@ spec:
       securityContext:
         runAsNonRoot: true
       containers:
-      - name: app
-        image: service-b        # a kustomization.yaml "images" része cseréli az ECR címre
-        ports:
-        - containerPort: 8080
-        readinessProbe:
-          httpGet:
-            path: /healthz
-            port: 8080
-          periodSeconds: 5
-        livenessProbe:
-          httpGet:
-            path: /healthz
-            port: 8080
-          initialDelaySeconds: 10
-          periodSeconds: 10
-        resources:
-          requests:
-            cpu: 50m
-            memory: 64Mi
-          limits:
-            memory: 128Mi
+        - name: app
+          image: service-b # a render.sh által generált overlay (k8s/overlays/local) "images" része cseréli az ECR címre és a tagre
+          ports:
+            - containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 128Mi
 ---
 apiVersion: v1
 kind: Service
@@ -50,5 +50,5 @@ spec:
   selector:
     app: service-b
   ports:
-  - port: 80
-    targetPort: 8080
+    - port: 80
+      targetPort: 8080
